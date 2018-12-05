@@ -3,13 +3,13 @@ HOMEPAGE = "https://github.com/clearlinux/swupd-client"
 LICENSE = "GPL-2.0"
 LIC_FILES_CHKSUM = "file://COPYING;md5=f8d90fb802930e30e49c39c8126a959e"
 
-DEPENDS = "glib-2.0 curl openssl libarchive bsdiff"
+DEPENDS = "glib-2.0 curl openssl libarchive bsdiff zstd"
 
-PV = "3.14.1"
+PV = "3.18.5"
 SRC_URI = "git://github.com/clearlinux/swupd-client.git;protocol=https \
            file://swupd-update-partition.sh \
            "
-SRCREV = "52019f638c44b4fc0da2ec068eac7df4a3224f1f"
+SRCREV = "a9c1366019fa5d1ae0b2a56be7d3fceb4aa693be"
 
 S = "${WORKDIR}/git"
 
@@ -42,6 +42,7 @@ EXTRA_OECONF = "\
 
 PACKAGECONFIG ??= ""
 PACKAGECONFIG[stateless] = ",--disable-stateless"
+PACKAGECONFIG[signatures] = "--enable-signature-verification,signature-verification"
 
 do_unpack[postfuncs] += "fix_timestamps "
 fix_timestamps () {
@@ -61,9 +62,8 @@ fix_timestamps () {
 do_patch[postfuncs] += "fix_paths "
 fix_paths () {
     # /usr/bin/systemctl is currently hard-coded in src/scripts.c update_triggers(),
-    # which may or may not be the right path. The systemd recipe uses ${base_bindir}/systemctl,
-    # so do the same here.
-    sed -i -e 's;/usr/bin/systemctl;${base_bindir}/systemctl;g' ${S}/src/*
+    # which may or may not be the right path.
+    sed -i -e 's;/usr/bin/systemctl;${base_prefix}/bin/systemctl;g' ${S}/src/*
 }
 
 do_install_append() {

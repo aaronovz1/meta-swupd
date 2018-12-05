@@ -25,6 +25,7 @@ def copyxattrfiles(d, filelist, src, dst, archive=False):
     """
     import subprocess
     import tempfile
+    import os
 
     bb.utils.mkdirhier(os.path.dirname(dst) if archive else dst)
     files = sorted(filelist)
@@ -37,11 +38,15 @@ def copyxattrfiles(d, filelist, src, dst, archive=False):
         for f in files:
             fdest.write('%s\n' % f)
 
+    env_copy = os.environ.copy()
+    env_copy['LANG'] = "en_US.UTF-8"
+    bb.note('bsdtar environment: %s\n' % str(env_copy))
+
     if fromdir:
         if archive:
-            cmd = "bsdtar --no-recursion -C %s -zcf %s -T %s -p" % (src, dst, copyfile)
+            cmd = "bsdtar --no-recursion --numeric-owner -C %s -zcf %s -T %s -p" % (src, dst, copyfile)
         else:
-            cmd = "bsdtar --no-recursion -C %s -cf - -T %s -p | bsdtar -p -xf - -C %s" % (src, copyfile, dst)
+            cmd = "bsdtar --no-recursion --numeric-owner -C %s -cf - -T %s -p | bsdtar --numeric-owner -p -xf - -C %s" % (src, copyfile, dst)
     else:
         if archive:
             # archive->archive not needed at the moment and cannot be done easily,
@@ -49,9 +54,9 @@ def copyxattrfiles(d, filelist, src, dst, archive=False):
             # filtering entries isn't supported in that mode.
             bb.fatal('Extracting files from an archive and writing into an archive not implemented yet.')
         else:
-            cmd = "bsdtar --no-recursion -C %s -xf %s -T %s" % (dst, src, copyfile)
+            cmd = "bsdtar --no-recursion --numeric-owner -C %s -xf %s -T %s" % (dst, src, copyfile)
     try:
-        output = subprocess.check_output(cmd, shell=True, stderr=subprocess.STDOUT)
+        output = subprocess.check_output(cmd, env=env_copy, shell=True, stderr=subprocess.STDOUT)
         if output:
             bb.fatal('Unexpected output from the following command:\n%s\n%s' % (cmd, output))
     finally:

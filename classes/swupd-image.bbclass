@@ -19,6 +19,8 @@ SWUPD_IMAGE_MANIFEST_SUFFIX = ".extra-content.txt"
 # different in the different virtual images).
 SWUPD_IMAGE_PN = "${@ d.getVar('PN_BASE', True) or d.getVar('PN', True)}"
 
+DEPLOY_DIR_SWUPD_UPDATE = "${DEPLOY_DIR_SWUPD}/update"
+
 # We need to preserve xattrs, which works with bsdtar out of the box.
 # It also has saner file handling (less syscalls per file) than GNU tar.
 # Last but not least, GNU tar 1.27.1 had weird problems extracting
@@ -81,7 +83,7 @@ python () {
         return
 
     # do_swupd_update requires the full swupd directory hierarchy
-    varflags = '%s/image %s/empty %s/www %s' % (deploy_dir, deploy_dir, deploy_dir, deploy_dir)
+    varflags = '%s/update/image %s/update/empty %s/update/www %s' % (deploy_dir, deploy_dir, deploy_dir, deploy_dir)
     d.setVarFlag('do_swupd_update', 'dirs', varflags)
 
     # For the base image only, set the BUNDLE_NAME to os-core and generate the
@@ -212,7 +214,7 @@ addtask do_swupd_list_bundle after do_image before do_build
 #"
 SWUPD_FILE_BLACKLIST ??= ""
 
-SWUPDIMAGEDIR = "${DEPLOY_DIR_SWUPD}/image"
+SWUPDIMAGEDIR = "${DEPLOY_DIR_SWUPD}/update/image"
 SWUPDMANIFESTDIR = "${WORKDIR}/swupd-manifests"
 
 fakeroot python do_stage_swupd_inputs () {
@@ -222,6 +224,7 @@ fakeroot python do_stage_swupd_inputs () {
         bb.debug(2, 'Skipping update input staging for non-base image %s' % d.getVar('PN', True))
         return
 
+    swupd.bundles.create_bundle_definitions(d)
     swupd.bundles.copy_core_contents(d)
     swupd.bundles.copy_bundle_contents(d)
 }
@@ -269,6 +272,17 @@ do_swupd_update () {
         exit
     fi
 
+    if [ -z ${SWUPD_SIGNING_PUBCERT} ] || [ -z ${SWUPD_SIGNING_PRIVKEY} ]; then
+        bbfatal "Manifest signing private key or public certificate path not set."
+        exit
+    fi
+
+    # Copy public certificate and private key into mixer workspace and make sure it's writable
+    cp ${SWUPD_SIGNING_PUBCERT} ${MIXER_DOCKER_HOST_DIR}/Swupd_Root.pem
+    chmod +w ${MIXER_DOCKER_HOST_DIR}/Swupd_Root.pem
+    cp ${SWUPD_SIGNING_PRIVKEY} ${MIXER_DOCKER_HOST_DIR}/private.pem
+    chmod +w ${MIXER_DOCKER_HOST_DIR}/private.pem
+
     export SWUPD_CERTS_DIR="${STAGING_ETCDIR_NATIVE}/swupd-certs"
     export LEAF_KEY="leaf.key.pem"
     export LEAF_CERT="leaf.cert.pem"
@@ -277,10 +291,12 @@ do_swupd_update () {
 
     export XZ_DEFAULTS="--threads 0"
 
+    MIXER_WORKSPACE_UPDATE_DIR=${MIXER_WORKSPACE_DIR}/update
+
     ${SWUPD_LOG_FN} "New OS_VERSION is ${OS_VERSION}"
     # If the swupd directory already exists don't trample over it, but let
     # the user know we're not doing any update generation.
-    if [ -e ${DEPLOY_DIR_SWUPD}/www/${OS_VERSION} ]; then
+    if [ -e ${DEPLOY_DIR_SWUPD_UPDATE}/www/${OS_VERSION} ]; then
         bbwarn 'swupd image directory exists for OS_VERSION=${OS_VERSION}, not generating updates.'
         bbwarn 'Ensure OS_VERSION is incremented if you want to generate updates.'
         exit
@@ -294,25 +310,29 @@ do_swupd_update () {
     #
     # However, we must unpack full.tar again to get the additional file
     # attributes right under our pseudo instance, so wipe it out in this case.
-    if ! [ -e ${DEPLOY_DIR_SWUPD}/image/${OS_VERSION} ]; then
-        latest=$(ls image | grep '^[0-9]*$' | sort -n | tail -1)
+    if ! [ -e ${DEPLOY_DIR_SWUPD_UPDATE}/image/${OS_VERSION} ]; then
+        latest=$(ls "${DEPLOY_DIR_SWUPD_UPDATE}/image" | grep '^[0-9]*$' | sort -n | tail -1)
         if [ "$latest" ]; then
-           ln -s $latest ${DEPLOY_DIR_SWUPD}/image/${OS_VERSION}
-           rm -rf image/$latest/full
+           ln -s $latest ${DEPLOY_DIR_SWUPD_UPDATE}/image/${OS_VERSION}
+
+           UPDATE_DIR_IN_DOCKER=$(echo "$dir" | sed "s@${DEPLOY_DIR_SWUPD_UPDATE}@${MIXER_WORKSPACE_UPDATE_DIR}@")
+           FULL_DIR_IN_DOCKER="$UPDATE_DIR_IN_DOCKER/image/$latest/full"
+
+           eval /usr/bin/docker run -i --network=host --workdir /home/clr/mix --entrypoint rm -v "${MIXER_DOCKER_HOST_DIR}:${MIXER_WORKSPACE_DIR}" ${MIXER_CONTAINER_NAME} "-rf $FULL_DIR_IN_DOCKER"
         else
-           bbfatal '${DEPLOY_DIR_SWUPD}/image/${OS_VERSION} does not exist and no previous version was found either.'
+           bbfatal '${DEPLOY_DIR_SWUPD_UPDATE}/image/${OS_VERSION} does not exist and no previous version was found either.'
            exit 1
         fi
     fi
 
     swupd_format_of_version () {
-        if [ ! -f ${DEPLOY_DIR_SWUPD}/www/$1/Manifest.MoM ]; then
-            bbfatal "Cannot determine swupd format of $1, ${DEPLOY_DIR_SWUPD}/www/$1/Manifest.MoM not found."
+        if [ ! -f ${DEPLOY_DIR_SWUPD_UPDATE}/www/$1/Manifest.MoM ]; then
+            bbfatal "Cannot determine swupd format of $1, ${DEPLOY_DIR_SWUPD_UPDATE}/www/$1/Manifest.MoM not found."
             exit 1
         fi
-        format=`head -1 ${DEPLOY_DIR_SWUPD}/www/$1/Manifest.MoM | perl -n -e '/^MANIFEST\s(\d+)$/ && print $1'`
+        format=`head -1 ${DEPLOY_DIR_SWUPD_UPDATE}/www/$1/Manifest.MoM | perl -n -e '/^MANIFEST\s(\d+)$/ && print $1'`
         if [ ! "$format" ]; then
-            bbfatal "Cannot determine swupd format of $1, ${DEPLOY_DIR_SWUPD}/www/$1/Manifest.MoM does not have MANIFEST with format number in first line."
+            bbfatal "Cannot determine swupd format of $1, ${DEPLOY_DIR_SWUPD_UPDATE}/www/$1/Manifest.MoM does not have MANIFEST with format number in first line."
             exit 1
         fi
         echo $format
@@ -329,15 +349,15 @@ do_swupd_update () {
     # hasn't changed and only the distro format was bumped. In that
     # case, reusing old content would be possible, but swupd-server
     # would have to be improved to know that.
-    if [ -e ${DEPLOY_DIR_SWUPD}/image/latest.version ]; then
-        PREVREL=`cat ${DEPLOY_DIR_SWUPD}/image/latest.version`
-        if [ ! -e ${DEPLOY_DIR_SWUPD}/www/$PREVREL/Manifest.MoM ]; then
-            bbfatal "${DEPLOY_DIR_SWUPD}/image/latest.version specifies $PREVREL as last version, but there is no corresponding ${DEPLOY_DIR_SWUPD}/www/$PREVREL/Manifest.MoM."
+    if [ -e ${DEPLOY_DIR_SWUPD_UPDATE}/image/latest.version ]; then
+        PREVREL=`cat ${DEPLOY_DIR_SWUPD_UPDATE}/image/latest.version`
+        if [ ! -e ${DEPLOY_DIR_SWUPD_UPDATE}/www/$PREVREL/Manifest.MoM ]; then
+            bbfatal "${DEPLOY_DIR_SWUPD_UPDATE}/image/latest.version specifies $PREVREL as last version, but there is no corresponding ${DEPLOY_DIR_SWUPD_UPDATE}/www/$PREVREL/Manifest.MoM."
             exit 1
         fi
         PREVFORMAT=`swupd_format_of_version $PREVREL`
         if [ ! "$PREVFORMAT" ]; then
-            bbfatal "Format number not found in first line of ${DEPLOY_DIR_SWUPD}/www/$PREVREL/Manifest.MoM"
+            bbfatal "Format number not found in first line of ${DEPLOY_DIR_SWUPD_UPDATE}/www/$PREVREL/Manifest.MoM"
             exit 1
         fi
         # For now assume that SWUPD_DISTRO_FORMAT is always 0 and that thus
@@ -352,7 +372,7 @@ do_swupd_update () {
         fi
     else
         bbdebug 2 "Stubbing out empty latest.version file"
-        touch ${DEPLOY_DIR_SWUPD}/image/latest.version
+        touch ${DEPLOY_DIR_SWUPD_UPDATE}/image/latest.version
         PREVREL="0"
         PREVFORMAT=${SWUPD_FORMAT}
         PREVTOOLSFORMAT=${SWUPD_FORMAT}
@@ -360,26 +380,27 @@ do_swupd_update () {
 
     # swupd-server >= 3.2.8 uses a different name. Support old and new names
     # via symlinking.
-    ln -sf latest.version ${DEPLOY_DIR_SWUPD}/image/LAST_VER
+    ln -sf latest.version ${DEPLOY_DIR_SWUPD_UPDATE}/image/LAST_VER
 
     ${SWUPD_LOG_FN} "Generating update from $PREVREL (format $PREVFORMAT) to ${OS_VERSION} (format ${SWUPD_FORMAT})"
 
     # Generate swupd-server configuration
-    bbdebug 2 "Writing ${DEPLOY_DIR_SWUPD}/server.ini"
-    if [ -e "${DEPLOY_DIR_SWUPD}/server.ini" ]; then
-       rm ${DEPLOY_DIR_SWUPD}/server.ini
+    SERVER_INI="${DEPLOY_DIR_SWUPD_UPDATE}/server.ini"
+    bbdebug 2 "Writing ${SERVER_INI}"
+    if [ -e "${SERVER_INI}" ]; then
+       rm ${SERVER_INI}
     fi
-    cat << END > ${DEPLOY_DIR_SWUPD}/server.ini
+    cat << END > ${SERVER_INI}
 [Server]
-imagebase=${DEPLOY_DIR_SWUPD}/image/
-outputdir=${DEPLOY_DIR_SWUPD}/www/
-emptydir=${DEPLOY_DIR_SWUPD}/empty/
+imagebase=${MIXER_WORKSPACE_DIR}/update/image/
+outputdir=${MIXER_WORKSPACE_DIR}/update/www/
+emptydir=${MIXER_WORKSPACE_DIR}/update/empty/
 END
 
-    GROUPS_INI="${DEPLOY_DIR_SWUPD}/groups.ini"
+    GROUPS_INI="${DEPLOY_DIR_SWUPD_UPDATE}/groups.ini"
     bbdebug 2 "Writing ${GROUPS_INI}"
-    if [ -e "${DEPLOY_DIR_SWUPD}/groups.ini" ]; then
-       rm ${DEPLOY_DIR_SWUPD}/groups.ini
+    if [ -e "${GROUPS_INI}" ]; then
+       rm ${GROUPS_INI}
     fi
     touch ${GROUPS_INI}
     ALL_BUNDLES="os-core ${SWUPD_BUNDLES} ${SWUPD_EMPTY_BUNDLES}"
@@ -389,125 +410,81 @@ END
         echo "" >> ${GROUPS_INI}
     done
 
-    # Activate pseudo explicitly for all following commands which need it.
-    # We use a database that is specific to the OS_VERSION, because that
-    # avoids (potential?) performance degradation that might occur when
-    # the same database is used for a growing number of files. Placing
-    # it inside the swupd deploy dir ensures that it gets wiped out
-    # together with that.
-    PSEUDO_LOCALSTATEDIR=${DEPLOY_DIR_SWUPD}/image/${OS_VERSION}.pseudo
-    rm -rf $PSEUDO_LOCALSTATEDIR
-    PSEUDO="${FAKEROOTENV} PSEUDO_LOCALSTATEDIR=$PSEUDO_LOCALSTATEDIR ${FAKEROOTCMD}"
-
-    # Explicitly export as part of the command line that we construct.
-    CURL="CURL_CA_BUNDLE=${CURL_CA_BUNDLE} "
+    invoke_bsdtar () {
+        eval /usr/bin/docker run -i -e LANG=en_US.UTF-8 -e LC_ALL=en_US.UTF-8 --network=host --workdir /home/clr/mix --entrypoint bsdtar -v "${MIXER_DOCKER_HOST_DIR}:${MIXER_WORKSPACE_DIR}" ${MIXER_CONTAINER_NAME} "$@"
+    }
 
     # Unpack the input rootfs dir(s) for use with the swupd tools. Might have happened
     # already in a previous run of this task.
-    for archive in ${DEPLOY_DIR_SWUPD}/image/*/*.tar; do
+    for archive in ${DEPLOY_DIR_SWUPD_UPDATE}/image/*/*.tar; do
         dir=$(echo $archive | sed -e 's/.tar$//')
         if [ -e $archive ] && ! [ -d $dir ]; then
             mkdir -p $dir
-            bbnote Unpacking $archive
-            env $PSEUDO bsdtar -xf $archive -C $dir
+
+            # Note @ must be used for delimiter as slashes are contained in the string and break sed
+            ARCHIVE_IN_DOCKER=$(echo "$archive" | sed "s@${DEPLOY_DIR_SWUPD_UPDATE}@${MIXER_WORKSPACE_UPDATE_DIR}@")
+            DIR_IN_DOCKER=$(echo "$dir" | sed "s@${DEPLOY_DIR_SWUPD_UPDATE}@${MIXER_WORKSPACE_UPDATE_DIR}@")
+            bbnote "Unpacking inside container ${ARCHIVE_IN_DOCKER} to ${DIR_IN_DOCKER}"
+            invoke_bsdtar "-xf ${ARCHIVE_IN_DOCKER} -C ${DIR_IN_DOCKER} --numeric-owner"
         fi
     done
 
-    # Remove any remaining intermediate artifacts from a previous run.
-    # Necessary because the corresponding cleanup in swupd-server is
-    # disabled because of https://bugzilla.yoctoproject.org/show_bug.cgi?id=10623.
-    rm -rf ${DEPLOY_DIR_SWUPD}/packstage
-
-    invoke_swupd () {
-        echo $PSEUDO env $CURL "$@"
-        eval ${SWUPD_TIMING_CMD} env $CURL $PSEUDO "$@"
-    }
-
-    waitall () {
-        while [ $# -gt 0 ]; do
-            pid=$1
-            shift
-            wait $pid
-        done
+    invoke_mixer () {
+        eval /usr/bin/docker run -i --network=host --workdir /home/clr/mix --entrypoint mixer -v "${MIXER_DOCKER_HOST_DIR}:${MIXER_WORKSPACE_DIR}" ${MIXER_CONTAINER_NAME} "$@" --native
     }
 
     if [ "${SWUPD_CONTENT_BUILD_URL}" ]; then
-        content_url_parameter="--content-url ${SWUPD_CONTENT_BUILD_URL}"
+        content_url_parameter="'${SWUPD_CONTENT_BUILD_URL}'"
     else
-        content_url_parameter=""
+        content_url_parameter="''"
     fi
 
     create_version () {
         swupd_format=$1
         tool_format=$2
         os_version=$3
+        prev_version=${PREVREL}
 
-        # env $PSEUDO bsdtar -acf ${DEPLOY_DIR}/swupd-before-create-update.tar.gz -C ${DEPLOY_DIR} swupd
-        invoke_swupd ${STAGING_BINDIR_NATIVE}/swupd_create_update_$tool_format --log-stdout -S ${DEPLOY_DIR_SWUPD} --osversion $os_version --format $swupd_format
+        if [ "${prev_version}" = "0" ]; then
+            prev_version="1"
+        fi
 
-        ${SWUPD_LOG_FN} "Generating fullfiles for $os_version"
-        # env $PSEUDO bsdtar -acf ${DEPLOY_DIR}/swupd-before-make-fullfiles.tar.gz -C ${DEPLOY_DIR} swupd
-        invoke_swupd ${STAGING_BINDIR_NATIVE}/swupd_make_fullfiles_$tool_format --log-stdout -S ${DEPLOY_DIR_SWUPD} $os_version
+        ${SWUPD_LOG_FN} 'Using mixer version:'
+        invoke_mixer "--version"
 
-        ${SWUPD_LOG_FN} "Generating zero packs, this can take some time."
-        # env $PSEUDO bsdtar -acf ${DEPLOY_DIR}/swupd-before-make-zero-pack.tar.gz -C ${DEPLOY_DIR} swupd
-        # Generating zero packs isn't parallelized internally. Mostly it just
-        # spends its time compressing a single tar archive. Therefore we parallelize
-        # by forking each command and then waiting for all of them to complete.
-        jobs=""
-        for bndl in ${ALL_BUNDLES}; do
-            # The zero packs are used by the swupd client when adding bundles.
-            # The zero pack for os-core is not needed by the swupd client itself;
-            # in Clear Linux OS it is used by the installer. We can save some
-            # space and build time by skipping the os-core zero bundle.
-            if [ $bndl = "os-core" ] && ! ${SWUPD_GENERATE_OS_CORE_ZERO_PACK}; then
-                continue
-            fi
-            invoke_swupd ${STAGING_BINDIR_NATIVE}/swupd_make_pack_$tool_format --log-stdout $content_url_parameter -S ${DEPLOY_DIR_SWUPD} 0 $os_version $bndl | sed -u -e "s/^/$bndl: /" &
-            jobs="$jobs $!"
-        done
+        ${SWUPD_LOG_FN} 'Initializing mixer workspace'
+        MIXER_INIT_CMD="init --clear-version ${prev_version} --format ${swupd_format} --upstream-url ${content_url_parameter} --no-default-bundles --mix-version ${os_version} --offline"
+        invoke_mixer ${MIXER_INIT_CMD}
 
-        # Generate delta-packs against previous versions chosen by our caller,
-        # if possible. Different formats make this useless because the previous
-        # version won't be able to update to the new version directly.
-        # env $PSEUDO bsdtar -acf ${DEPLOY_DIR}/swupd-before-make-delta-pack.tar.gz -C ${DEPLOY_DIR} swupd
-        for prevver in ${SWUPD_DELTAPACK_VERSIONS}; do
-            old_swupd_format=`swupd_format_of_version $prevver`
-            if [ $old_swupd_format -eq $swupd_format ]; then
-                for bndl in ${ALL_BUNDLES}; do
-                    ${SWUPD_LOG_FN} "Generating delta pack from $prevver to $os_version for $bndl"
-                    invoke_swupd ${STAGING_BINDIR_NATIVE}/swupd_make_pack_$tool_format --log-stdout $content_url_parameter -S ${DEPLOY_DIR_SWUPD} $prevver $os_version $bndl | sed -u -e "s/^/$prevver $bndl: /" &
-                    jobs="$jobs $!"
-                done
-            fi
-        done
+        ${SWUPD_LOG_FN} "Generating fullfiles and zero-packs for $os_version, this can take some time."
+        invoke_mixer build update --format ${swupd_format}
 
-        waitall $jobs
-
-        # Write version to www/version/format$swupd_format/latest.
-        bbdebug 2 "Writing latest file"
-        mkdir -p ${DEPLOY_DIR_SWUPD}/www/version/format$swupd_format
-        echo $os_version > ${DEPLOY_DIR_SWUPD}/www/version/format$swupd_format/latest
-        # env $PSEUDO bsdtar -acf ${DEPLOY_DIR}/swupd-done.tar.gz -C ${DEPLOY_DIR} swupd
+        if [ ! -z "${SWUPD_DELTAPACK_VERSIONS}" ]; then
+            # Generate delta-packs against previous number of versions chosen by our caller,
+            # if possible. Different formats make this useless because the previous
+            # version won't be able to update to the new version directly.
+            invoke_mixer build delta-packs --report --previous-versions ${SWUPD_DELTAPACK_VERSIONS} --to $os_version
+        else
+            bbnote 'SWUPD_DELTAPACK_VERSIONS not set, skipping delta pack generation.'
+        fi
     }
 
     if [ $PREVFORMAT -ne ${SWUPD_FORMAT} ]; then
         # Exact same content (including the OS_VERSION in the os-release file),
         # just different tool and/or format in the manifests.
-        ln -sf ${OS_VERSION} ${DEPLOY_DIR_SWUPD}/image/${OS_VERSION_INTERIM}
-        echo $PREVREL > ${DEPLOY_DIR_SWUPD}/image/latest.version
+        ln -sf ${OS_VERSION} ${DEPLOY_DIR_SWUPD_UPDATE}/image/${OS_VERSION_INTERIM}
+        echo $PREVREL > ${DEPLOY_DIR_SWUPD_UPDATE}/image/latest.version
         create_version $PREVFORMAT $PREVTOOLSFORMAT ${OS_VERSION_INTERIM}
     fi
-    echo $PREVREL > ${DEPLOY_DIR_SWUPD}/image/latest.version
+    echo $PREVREL > ${DEPLOY_DIR_SWUPD_UPDATE}/image/latest.version
     create_version ${SWUPD_FORMAT} ${SWUPD_TOOLS_FORMAT} ${OS_VERSION}
-    echo ${OS_VERSION} > ${DEPLOY_DIR_SWUPD}/image/latest.version
+    echo ${OS_VERSION} > ${DEPLOY_DIR_SWUPD_UPDATE}/image/latest.version
 }
 
 SWUPDDEPENDS = "\
     virtual/fakeroot-native:do_populate_sysroot \
     rsync-native:do_populate_sysroot \
     bsdiff-native:do_populate_sysroot \
-    ${@ ' '.join(['swupd-server-format%s-native:do_populate_sysroot' % x for x in '${SWUPD_SERVER_FORMATS}'.split()])} \
 "
 
 addtask swupd_update after do_image_complete before do_build

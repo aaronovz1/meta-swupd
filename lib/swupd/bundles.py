@@ -62,7 +62,7 @@ def copy_core_contents(d):
     target = d.expand('${SWUPDIMAGEDIR}/${OS_VERSION}/os-core')
 
     bb.utils.mkdirhier(imagedir)
-    shutil.copy(source + contentsuffix, target + contentsuffix)
+    shutil.copy(source + contentsuffix + '.json', target + '-info')
 
     # Create full.tar.gz instead of directory - speeds up
     # do_stage_swupd_input from ~11min in the Ostro CI to 6min.
@@ -78,9 +78,34 @@ def copy_core_contents(d):
                                   rootfs, fulltar, True)
     else:
         mega_archive = d.getVar('MEGA_IMAGE_ARCHIVE', True)
+        bb.debug(1, "Linking mega archive from (%s) to (%s)" % (mega_archive, fulltar))
         if os.path.exists(fulltar):
             os.unlink(fulltar)
         os.link(mega_archive, fulltar)
+
+
+def create_bundle_definitions(d):
+    """
+
+
+    """
+    bundles = (d.getVar('SWUPD_BUNDLES', True) or '').split()
+    deploy_dir_swupd = d.expand('${DEPLOY_DIR_SWUPD}')
+    local_bndl_path = os.path.join(deploy_dir_swupd, 'local-bundles')
+    bb.utils.mkdirhier(local_bndl_path)
+
+    with open(os.path.join(deploy_dir_swupd, 'mixbundles'), 'w+') as mixbundles:
+        for bndl in bundles:
+            mixbundles.write(bndl + '\n')
+            bndl_def_path = os.path.join(local_bndl_path, bndl)
+            bb.debug(1, "Creating bundle definition for: %s" % (bndl))
+            with open(bndl_def_path, 'w+') as i:
+                i.write('# [TITLE]: ' + bndl + '\n')
+                i.write('# [DESCRIPTION]:\n')
+                i.write('# [STATUS]: Active\n')
+                i.write('# [CAPABILITIES]:\n')
+                i.write('# [MAINTAINER]:\n')
+                i.write('\n'.join(get_bundle_packages(d, bndl)))
 
 
 def list_bundle_contents(d):
@@ -98,6 +123,7 @@ def list_bundle_contents(d):
     # Construct paths to manifest files and directories
     pn = d.getVar('PN', True)
     base_pn = d.getVar('PN_BASE', True)
+    swupd_image_pn = d.getVar('SWUPD_IMAGE_PN', True)
     rootfs = d.getVar('IMAGE_ROOTFS', True)
     contentbase = os.path.join(d.getVar('WORKDIR', True), 'swupd')
     contentsuffix = d.getVar('SWUPD_ROOTFS_MANIFEST_SUFFIX', True)
@@ -106,14 +132,27 @@ def list_bundle_contents(d):
     # Generate the manifest of the bundle image's file contents,
     # excluding blacklisted files and the content of the os-core.
     unwanted_files = set((d.getVar('SWUPD_FILE_BLACKLIST', True) or '').split())
+
+    # Get bundle name from package name and clean it up.
+    # os-core is equivalent to the value in SWUPD_IMAGE_PN so we use it to
+    # translate to the correct bundle name.
+    bundle_name = pn
+    if bundle_name == swupd_image_pn:
+        bundle_name = "os-core"
+    bundle_name.replace('bundle-' + swupd_image_pn + '-', '')
+
+    bb.debug(1, 'Creating bundle-info for %s' % bundle_name)
     if base_pn:
         parts = d.getVar('WORKDIR', True).rsplit(pn, 1)
         os_core_content = parts[0] + base_pn + parts[1] + '/swupd' + contentsuffix
+        bb.debug(1, 'Excluding os-core content from: %s' % os_core_content)
         unwanted_files.update(['/' + x for x in swupd.utils.manifest_to_file_list(os_core_content)])
     swupd.utils.create_content_manifests(rootfs,
                                          contentbase + contentsuffix,
                                          contentbase + imagesuffix,
-                                         unwanted_files)
+                                         unwanted_files,
+                                         bundle_name,
+                                         contentbase + contentsuffix + '.json')
 
 def stage_empty_bundle(d, bundle):
     """
@@ -146,9 +185,13 @@ def copy_bundle_contents(d):
     bundledir = d.expand('${SWUPDIMAGEDIR}/${OS_VERSION}')
     contentsuffix = d.getVar('SWUPD_ROOTFS_MANIFEST_SUFFIX', True)
     parts = workdir.rsplit(pn, 1)
+
     for bndl in bundles:
-        shutil.copyfile(parts[0] + ('bundle-%s-%s' % (pn, bndl)) + parts[1] + '/swupd' + contentsuffix,
-                        os.path.join(bundledir, bndl + contentsuffix))
+        bundle_base_dir = parts[0] + ('bundle-%s-%s' % (pn, bndl)) + parts[1]
+
+        shutil.copyfile(bundle_base_dir + '/swupd' + contentsuffix + '.json',
+                        os.path.join(bundledir, bndl + '-info'))
+
     bundles = (d.getVar('SWUPD_EMPTY_BUNDLES', True) or '').split()
     for bndl in bundles:
         stage_empty_bundle(d, bndl)
@@ -207,7 +250,7 @@ def download_old_versions(d):
     content_url = d.getVar('SWUPD_CONTENT_BUILD_URL', True)
     version_url = d.getVar('SWUPD_VERSION_BUILD_URL', True)
     current_format = int(d.getVar('SWUPD_FORMAT', True))
-    deploy_dir = d.getVar('DEPLOY_DIR_SWUPD', True)
+    deploy_dir = d.getVar('DEPLOY_DIR_SWUPD_UPDATE', True)
     www_dir = os.path.join(deploy_dir, 'www')
 
     if not content_url or not version_url:

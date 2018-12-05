@@ -51,12 +51,12 @@ def create_rootfs(d):
         outfile = d.expand('${WORKDIR}/orig-rootfs-manifest.txt')
         rootfs = d.getVar('IMAGE_ROOTFS', True)
         # Generate a manifest of the current file contents
-        create_content_manifests(rootfs, outfile, None, [])
+        create_content_manifests(rootfs, outfile, None, [], None, None)
         rootfs_contents.update(manifest_to_file_list(outfile))
         # clean up
         os.unlink(outfile)
     else: # non-base image, i.e. swupdimage
-        manifest = d.expand("${DEPLOY_DIR_SWUPD}/image/${OS_VERSION}/os-core")
+        manifest = d.expand("${DEPLOY_DIR_SWUPD}/update/image/${OS_VERSION}/os-core")
         for suffix in suffixes:
             rootfs_contents.update(manifest_to_file_list(parts[0] + pn_base + parts[1] + '/swupd' + suffix))
 

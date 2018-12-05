@@ -17,6 +17,33 @@ python () {
 # uses it as the main work directory.
 DEPLOY_DIR_SWUPD ??= "${DEPLOY_DIR}/swupd/${MACHINE}/${SWUPD_IMAGE_PN}"
 
+# The directory on the host that is shared with the docker container.
+# This is just an alias to the swupd deploy directory defined above.
+MIXER_DOCKER_HOST_DIR ??= "${DEPLOY_DIR_SWUPD}"
+
+# Directory that is shared between the host and the docker image.
+# It will map to MIXER_DOCKER_HOST_DIR.
+MIXER_WORKSPACE_DIR ??= "/home/clr/mix"
+
+# Name of mixer docker container
+MIXER_CONTAINER_NAME ??= "clearlinux/clr-sdk"
+
+
+# Generate signing and private key and public certificate using:
+# openssl req -x509 -sha256 -days 365 -nodes -newkey rsa:2048 \
+#                -keyout private.pem -out Swupd_Root.pem \
+#                -subj "/C=US/ST=MyState/L=MyLocation/O=My Company/OU=Org/CN=CompanyWebsite/DN=MixerCert"
+#
+# An absolute path for a file containing the certificate that is
+# is to be used for verifying the Manifest.MoM.
+# Only used by the swupd client.
+SWUPD_SIGNING_PUBCERT ??= ""
+
+# An absolute path for a file containing the private that is
+# is to be used for signing the Manifest.MoM.
+# Only used by mixer.
+SWUPD_SIGNING_PRIVKEY ??= ""
+
 # The information about where to find version information and actual
 # content is needed in several places:
 # - the swupd client in the image gets configured such that it uses that as default
@@ -56,20 +83,6 @@ SWUPD_CONTENT_BUILD_URL ??= ""
 # generation.
 SWUPD_GENERATE ??= "1"
 
-# The zero pack for os-core contains all files that normally are always
-# installed on a device. It is only needed for installing from
-# scratch with "swupd verify --install".
-#
-# If that is not needed, then disabling that zero pack with
-# SWUPD_GENERATE_OS_CORE_ZERO_PACK = "false" can make update data
-# considerably smaller, because only changes need to be stored. Builds
-# also become faster because compressing the zero pack is a bottleneck
-# (see also https://github.com/clearlinux/swupd-server/issues/73).
-#
-# Zero packs for other bundles are always created, because "swupd
-# bundle add/remove" depends on them.
-SWUPD_GENERATE_OS_CORE_ZERO_PACK ??= "true"
-
 # By default, a new swupd update re-uses unchanged files from the
 # previous build ("incremental update") and all changed files are
 # stored in compressed tar archives (one per file). In this mode,
@@ -94,8 +107,8 @@ SWUPD_GENERATE_OS_CORE_ZERO_PACK ??= "true"
 #
 # Because meta-swupd cannot make assumptions about which model is
 # used, generating deltas is disabled by default. To enable it, set
-# SWUPD_DELTAPACK_VERSIONS to a space-separated list of version
-# numbers.
+# SWUPD_DELTAPACK_VERSIONS to a number indicating how many previous
+# versions to generate deltas for.
 SWUPD_DELTAPACK_VERSIONS ??= ""
 
 # Determines the verbosity of some messages about major steps in the

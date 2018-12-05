@@ -1,4 +1,4 @@
-
+import json
 
 def manifest_to_file_list(manifest_fn):
     """
@@ -15,7 +15,7 @@ def manifest_to_file_list(manifest_fn):
     return image_manifest_list
 
 
-def create_content_manifests(dir, included, excluded, blacklist):
+def create_content_manifests(dir, included, excluded, blacklist, bundle_name, bundle_path):
     """
     Iterate over the content of the directory, decide which entries are
     included in the swupd update mechanism and write the absolute paths of the remaining
@@ -25,6 +25,7 @@ def create_content_manifests(dir, included, excluded, blacklist):
     bb.debug(3, 'Creating %s and %s from directory %s, excluding %s' %
              (included, excluded, dir, blacklist))
     cwd = os.getcwd()
+    file_list = []
     try:
         os.chdir(dir)
         with open(included, 'w') as i:
@@ -39,7 +40,33 @@ def create_content_manifests(dir, included, excluded, blacklist):
                         fullpath = os.path.join(root, entry)
                         out = e if blacklist and fullpath in blacklist else i
                         out.write(fullpath + '\n')
+
+                        if not blacklist or (blacklist and fullpath not in blacklist):
+                            file_list.append(fullpath)
     finally:
+        if bundle_name and bundle_path:
+            bb.debug(3, 'Creating bundle-info JSON for %s' % bundle_name)
+            json_obj = {
+                "Name": bundle_name,
+                "Filename": "",
+                "Header": {
+                    "Title": "",
+                    "Description": "",
+                    "Status": "",
+                    "Capabilities": "",
+                    "Maintainer": ""
+                },
+                "DirectIncludes": None,
+                "AllPackages": None,
+                "Files": {
+                }
+            }
+
+            for filepath in file_list:
+                json_obj['Files'][filepath] = True
+
+            with open(bundle_path, 'w') as outfile:
+                json.dump(json_obj, outfile)
         os.chdir(cwd)
 
 def delta_contents(difflist):

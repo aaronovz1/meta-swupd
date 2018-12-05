@@ -45,7 +45,7 @@ EXIT_NETWORK=2
 
 usage () {
     cat <<EOF
-$0 -h|-p partition -m version -c contenturl [-f mkfscmd [-F]] [-s source]
+$0 -h|-p partition -m version -c contenturl [-f mkfscmd [-F]] [-s source] [-t pickytree]
 
 -h              help message
 -p partition    full path to device entry for the target partition
@@ -58,6 +58,7 @@ $0 -h|-p partition -m version -c contenturl [-f mkfscmd [-F]] [-s source]
                 before updating the target partition; can be a block device
                 which will be mounted or an already mounted filesystem
                 path which will be bind-mounted
+-t pickytree    the sub-tree where --picky looks for extra files
 
 Ensures that an entire partition contains exactly the files from a
 certain OS build and nothing else. Incremental updates are tried when
@@ -135,8 +136,9 @@ CONTENTURL=
 MKFSCMD=
 FORCE_MKFS=
 SOURCE=
+PICKYTREE="/"
 
-while getopts ":hp:m:c:f:Fs:" opt; do
+while getopts ":hp:m:c:f:Fs:t:" opt; do
     case $opt in
         h)
             usage
@@ -159,6 +161,9 @@ while getopts ":hp:m:c:f:Fs:" opt; do
             ;;
         s)
             SOURCE="$OPTARG"
+            ;;
+        t)
+            PICKYTREE="$OPTARG"
             ;;
         \?)
             log "Invalid option: -$OPTARG" >&2
@@ -339,7 +344,7 @@ format_and_install () {
             copy_from_source && update
         else
             log "Installing into empty partition."
-            execute_swupd verify --install $SWUPDSCRIPTS -F $SWUPDFORMAT -c "$CONTENTURL" -v "$VERSIONURL" -m "$VERSION" -S "$STATEDIR" -p "$MOUNTPOINT"
+            execute_swupd verify --install $SWUPDSCRIPTS -F $SWUPDFORMAT -c "$CONTENTURL" -v "$VERSIONURL" -m "$VERSION" -S "$STATEDIR" -p "$MOUNTPOINT" -t
         fi
     else
         return 1
@@ -362,7 +367,7 @@ update () {
     # Don't trust existing leftover state on the partition. Merely a precaution.
     rm -rf "$STATEDIR"
     log "Trying to update."
-    if ! execute_swupd update $SWUPDSCRIPTS -c "$CONTENTURL" -v "$VERSIONURL" -S "$STATEDIR" -p "$MOUNTPOINT"; then
+    if ! execute_swupd update $SWUPDSCRIPTS -c "$CONTENTURL" -v "$VERSIONURL" -S "$STATEDIR" -p "$MOUNTPOINT" -t; then
         log "Incremental update failed, falling back to fixing content."
     fi
 
@@ -376,7 +381,7 @@ update () {
     # We start at the root and thus also remove "lost+found" and any
     # leftover files which might be stored in it.
     log "Verifying and fixing content."
-    execute_swupd verify --fix --picky --picky-tree / --picky-whitelist /$STATEDIR_RELATIVE $SWUPDSCRIPTS -F $SWUPDFORMAT -c "$CONTENTURL" -v "$VERSIONURL" -m "$VERSION" -S "$STATEDIR" -p "$MOUNTPOINT"
+    execute_swupd verify --fix --picky --picky-tree "$PICKYTREE" --picky-whitelist /$STATEDIR_RELATIVE $SWUPDSCRIPTS -F $SWUPDFORMAT -c "$CONTENTURL" -v "$VERSIONURL" -m "$VERSION" -S "$STATEDIR" -p "$MOUNTPOINT" -t
 }
 
 copy_from_source () {
