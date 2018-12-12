@@ -283,6 +283,9 @@ def download_old_versions(d):
         except urllib.error.HTTPError as http_error:
             if http_error.code == 404:
                 bb.debug(1, '%s does not exist, skipping that format' % url)
+            elif http_error.code == 403:
+                # 403 can be returned from AWS for invalid URL's
+                bb.debug(1, '%s does not exist or is forbidden, skipping that format' % url)
             else:
                 raise
         except urllib.error.URLError as url_error:
@@ -301,7 +304,9 @@ def download_old_versions(d):
     # expected to detect corrupted archives and https is expected
     # to protect against man-in-the-middle attacks.
     pending_versions = set(latest_versions.values())
-    pending_versions.update([int(x) for x in d.getVar('SWUPD_DELTAPACK_VERSIONS', True).split()])
+    num_delta_versions = int(d.getVar('SWUPD_DELTAPACK_VERSIONS', True))
+    current_version = latest_versions[current_format]
+    pending_versions.update(list(range(max(1, current_version - num_delta_versions), current_version)))
     fetched_versions = set([0])
     while pending_versions:
         version = pending_versions.pop()
